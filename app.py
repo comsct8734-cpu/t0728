@@ -1,1079 +1,835 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import io
 
-# Streamlit 페이지 기본 설정
+# ==========================================
+# 0. Page Config & Session State Initialization
+# ==========================================
 st.set_page_config(
-    page_title="머신러닝 플레이그라운드 (수업용)",
-    page_icon="🤖",
+    page_title="CSV 데이터로 배우는 선형회귀 실험실",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for Streamlit UI refinement
-st.markdown("""
-<style>
-    .main .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-        max-width: 1400px;
-    }
-    .stButton>button {
-        width: 100%;
-        border-radius: 8px;
-        font-weight: 600;
-    }
-    .info-box {
-        background-color: #f0fdf4;
-        border: 1px solid #bbf7d0;
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin-bottom: 15px;
-        color: #166534;
-    }
-</style>
-""", unsafe_allow_html=True)
+# 세션 상태 초기화 (탭 이동 시 학습 모델 및 데이터 유지)
+if 'df' not in st.session_state:
+    st.session_state['df'] = None
+if 'simple_model_results' not in st.session_state:
+    st.session_state['simple_model_results'] = None
+if 'multi_model_results' not in st.session_state:
+    st.session_state['multi_model_results'] = None
 
-# 인터랙티브 캔버스 웹앱 HTML/JS/CSS 소스코드
-HTML_CODE = """
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>머신러닝 플레이그라운드</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Pretendard', sans-serif; user-select: none; }
-        .tab-btn.active {
-            border-bottom: 3px solid #3b82f6;
-            color: #2563eb;
-            font-weight: 700;
-        }
-        canvas {
-            touch-action: none;
-            cursor: crosshair;
-        }
-        /* Custom Tooltip Styling */
-        .has-tooltip {
-            position: relative;
-            display: inline-flex;
-            align-items: center;
-            cursor: help;
-        }
-        .has-tooltip .tooltip-text {
-            visibility: hidden;
-            width: 220px;
-            background-color: #1e293b;
-            color: #fff;
-            text-align: left;
-            border-radius: 8px;
-            padding: 8px 12px;
-            position: absolute;
-            z-index: 50;
-            bottom: 125%;
-            left: 50%;
-            margin-left: -110px;
-            opacity: 0;
-            transition: opacity 0.2s, transform 0.2s;
-            transform: translateY(4px);
-            font-size: 0.75rem;
-            font-weight: 400;
-            line-height: 1.4;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
-            pointer-events: none;
-        }
-        .has-tooltip .tooltip-text::after {
-            content: "";
-            position: absolute;
-            top: 100%;
-            left: 50%;
-            margin-left: -5px;
-            border-width: 5px;
-            border-style: solid;
-            border-color: #1e293b transparent transparent transparent;
-        }
-        .has-tooltip:hover .tooltip-text {
-            visibility: visible;
-            opacity: 1;
-            transform: translateY(0);
-        }
-    </style>
-</head>
-<body class="bg-slate-50 text-slate-800 p-2 md:p-4">
-    <div class="max-w-7xl mx-auto bg-white rounded-2xl shadow-md border border-slate-200 overflow-hidden">
+# ==========================================
+# Helper Functions (함수 단위 구현)
+# ==========================================
+
+def generate_sample_data() -> pd.DataFrame:
+    """학생 실습용 미세먼지(PM2.5) 기상 예제 데이터를 생성합니다."""
+    np.random.seed(42)
+    n_samples = 120
+    
+    temperature = np.random.uniform(-5, 32, n_samples)  # 기온 (-5 ~ 32 ℃)
+    humidity = np.random.uniform(20, 90, n_samples)      # 습도 (20 ~ 90 %)
+    wind_speed = np.random.uniform(0.5, 8.0, n_samples)  # 풍속 (0.5 ~ 8.0 m/s)
+    rainfall = np.random.choice([0, 0, 0, 0.5, 2.0, 10.0, 25.0], n_samples) # 강수량 (mm)
+    
+    # PM2.5 생성 물리 모델 (바람 불면 감소, 습도 높으면 상승, 비 오면 세척 효과)
+    pm25 = (
+        35.0 
+        + 0.6 * temperature 
+        + 0.4 * humidity 
+        - 4.2 * wind_speed 
+        - 1.5 * rainfall 
+        + np.random.normal(0, 7.0, n_samples)
+    )
+    pm25 = np.clip(pm25, 5, 150) # 음수 방지 및 현실적 범위 설정
+    
+    df = pd.DataFrame({
+        'temperature': np.round(temperature, 1),
+        'humidity': np.round(humidity, 1),
+        'wind_speed': np.round(wind_speed, 1),
+        'rainfall': np.round(rainfall, 1),
+        'pm25': np.round(pm25, 1)
+    })
+    return df
+
+def load_csv(uploaded_file) -> pd.DataFrame:
+    """CSV 파일을 UTF-8 및 CP949 인코딩으로 안전하게 로드합니다."""
+    try:
+        bytes_data = uploaded_file.read()
+        try:
+            df = pd.read_csv(io.BytesIO(bytes_data), encoding='utf-8')
+        except UnicodeDecodeError:
+            df = pd.read_csv(io.BytesIO(bytes_data), encoding='cp949')
+        return df
+    except Exception as e:
+        st.error(f"❌ CSV 파일을 읽는 중 오류가 발생했습니다: {str(e)}")
+        return None
+
+def validate_data(df: pd.DataFrame):
+    """데이터의 행 수 및 숫자형 열 개수를 검증합니다."""
+    if df is None:
+        return False, "데이터가 존재하지 않습니다."
+    
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if len(numeric_cols) < 2:
+        return False, "선형회귀를 수행하려면 최소 2개 이상의 숫자형(Numeric) 열이 필요합니다."
+    
+    if len(df) < 10:
+        return False, "데이터 행 수(샘플 수)가 10개 미만입니다. 최소 10개 이상의 데이터가 필요합니다."
         
-        <!-- Tab Navigation -->
-        <div class="flex border-b border-slate-200 bg-slate-100/80 px-4 pt-3 gap-2 overflow-x-auto">
-            <button onclick="switchTab('linear')" id="tab-linear" class="tab-btn active px-4 py-3 font-semibold text-slate-600 hover:text-blue-600 transition flex items-center gap-2 whitespace-nowrap">
-                <i class="fa-solid fa-chart-line"></i> 1단계: 선형 회귀 (Linear)
-            </button>
-            <button onclick="switchTab('logistic')" id="tab-logistic" class="tab-btn px-4 py-3 font-semibold text-slate-600 hover:text-blue-600 transition flex items-center gap-2 whitespace-nowrap">
-                <i class="fa-solid fa-square-poll-vertical"></i> 2단계: 로지스틱 회귀 (Logistic)
-            </button>
-            <button onclick="switchTab('knn')" id="tab-knn" class="tab-btn px-4 py-3 font-semibold text-slate-600 hover:text-blue-600 transition flex items-center gap-2 whitespace-nowrap">
-                <i class="fa-solid fa-circle-nodes"></i> 3단계: K-최근접 이웃 (KNN)
-            </button>
-        </div>
-
-        <!-- Notification Toast -->
-        <div id="toast" class="hidden fixed bottom-5 right-5 bg-slate-800 text-white px-4 py-3 rounded-xl shadow-2xl z-50 text-sm flex items-center gap-2 transition-all">
-            <i class="fa-solid fa-circle-info text-blue-400"></i> <span id="toast-msg">알림 메시지</span>
-        </div>
-
-        <div class="p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-            
-            <!-- Left Column: Canvas Area (7 Cols) -->
-            <div class="lg:col-span-7 flex flex-col gap-4">
-                <!-- Canvas Container -->
-                <div class="relative bg-slate-900 rounded-2xl shadow-inner overflow-hidden border border-slate-800 aspect-square w-full max-h-[580px] flex items-center justify-center">
-                    <canvas id="mlCanvas" class="w-full h-full block"></canvas>
-                    
-                    <!-- Prediction Floating Tooltip -->
-                    <div id="predTooltip" class="absolute hidden bg-blue-600/90 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-lg pointer-events-none transition-all">
-                        예측중...
-                    </div>
-                </div>
-
-                <!-- Mode Indicator / Direct Instructions -->
-                <div class="flex items-center justify-between text-xs md:text-sm bg-slate-100 p-3 rounded-xl border border-slate-200">
-                    <div class="flex items-center gap-2 font-medium text-slate-700">
-                        <i class="fa-solid fa-hand-pointer text-blue-500"></i>
-                        <span id="interactionHint">캔버스를 좌클릭하여 데이터를 추가하세요. (우클릭: 점 삭제)</span>
-                    </div>
-                    <span id="pointCountBadge" class="bg-blue-100 text-blue-700 font-bold px-2.5 py-1 rounded-full text-xs">
-                        데이터: 0개
-                    </span>
-                </div>
-            </div>
-
-            <!-- Right Column: Controls & Metrics (5 Cols) -->
-            <div class="lg:col-span-5 flex flex-col gap-5">
-                
-                <!-- 1. Data Control Section -->
-                <div class="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                    <h3 class="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm md:text-base">
-                        <i class="fa-solid fa-database text-blue-500"></i> 데이터 설정 & 업로드
-                    </h3>
-                    
-                    <!-- CSV Upload -->
-                    <div class="mb-3">
-                        <label class="block text-xs font-semibold text-slate-600 mb-1">
-                            <i class="fa-solid fa-file-csv text-green-600"></i> CSV 데이터 업로드
-                            <span class="has-tooltip ml-1 text-slate-400"><i class="fa-solid fa-circle-question"></i>
-                                <span class="tooltip-text">숫자 데이터가 포함된 CSV를 업로드하면 좌표계에 자동으로 정규화하여 시각화합니다.</span>
-                            </span>
-                        </label>
-                        <input type="file" id="csvFileInput" accept=".csv" onchange="handleCSVUpload(event)" class="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer">
-                    </div>
-
-                    <!-- Example Dataset Selection -->
-                    <div class="mb-3">
-                        <label class="block text-xs font-semibold text-slate-600 mb-1">탐구용 예시 데이터셋 선택</label>
-                        <div class="grid grid-cols-2 gap-2" id="presetButtons">
-                            <!-- Injected dynamically based on tab -->
-                        </div>
-                    </div>
-
-                    <!-- Quick Random Point Generator -->
-                    <div class="mb-3">
-                        <label class="block text-xs font-semibold text-slate-600 mb-1">랜덤 데이터 빠른 추가</label>
-                        <div class="flex items-center gap-2">
-                            <button onclick="addRandomPoints(1)" class="flex-1 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg text-xs font-semibold text-slate-700 transition">+1개</button>
-                            <button onclick="addRandomPoints(5)" class="flex-1 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg text-xs font-semibold text-slate-700 transition">+5개</button>
-                            <button onclick="addRandomPoints(10)" class="flex-1 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg text-xs font-semibold text-slate-700 transition">+10개</button>
-                        </div>
-                    </div>
-
-                    <!-- Class selector for Classification Modes -->
-                    <div id="classSelectorBox" class="hidden mt-3 pt-3 border-t border-slate-200">
-                        <label class="block text-xs font-semibold text-slate-600 mb-1.5">추가할 클래스(범주) 선택</label>
-                        <div class="flex gap-3">
-                            <label class="flex-1 flex items-center justify-center gap-2 p-2 bg-red-50 border-2 border-red-400 rounded-lg cursor-pointer font-bold text-xs text-red-600">
-                                <input type="radio" name="classSelect" value="0" checked onchange="selectedClass=0"> 클래스 0 (빨강)
-                            </label>
-                            <label class="flex-1 flex items-center justify-center gap-2 p-2 bg-blue-50 border-2 border-blue-400 rounded-lg cursor-pointer font-bold text-xs text-blue-600">
-                                <input type="radio" name="classSelect" value="1" onchange="selectedClass=1"> 클래스 1 (파랑)
-                            </label>
-                        </div>
-                    </div>
-
-                    <!-- Clear / Action buttons -->
-                    <div class="flex gap-2 mt-3">
-                        <button onclick="clearData()" class="flex-1 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-xl font-bold text-xs transition flex items-center justify-center gap-1">
-                            <i class="fa-solid fa-trash-can"></i> 전체 초기화
-                        </button>
-                        <button onclick="toggleMode()" id="modeToggleBtn" class="flex-1 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold text-xs transition flex items-center justify-center gap-1">
-                            <i class="fa-solid fa-crosshairs"></i> <span id="modeToggleText">예측 모드 켜기</span>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- 2. Hyperparameter & Model Learning -->
-                <div class="bg-slate-50 border border-slate-200 rounded-xl p-4">
-                    <h3 class="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm md:text-base">
-                        <i class="fa-solid fa-sliders text-blue-500"></i> 하이퍼파라미터 & 학습
-                    </h3>
-
-                    <!-- Tab 1 & 2 Specific Controls -->
-                    <div id="regressionControls" class="space-y-3">
-                        <div>
-                            <div class="flex justify-between text-xs font-semibold text-slate-600 mb-1">
-                                <span class="has-tooltip">학습률 (Learning Rate, α)
-                                    <span class="tooltip-text">가중치를 한 번에 얼마나 업데이트할지 결정합니다. 너무 크면 발산하고 너무 작으면 학습이 느립니다.</span>
-                                </span>
-                                <span id="lrVal" class="text-blue-600 font-bold">0.05</span>
-                            </div>
-                            <input type="range" id="lrSlider" min="0.001" max="0.3" step="0.005" value="0.05" oninput="document.getElementById('lrVal').innerText=this.value" class="w-full accent-blue-600 cursor-pointer">
-                        </div>
-
-                        <div>
-                            <div class="flex justify-between text-xs font-semibold text-slate-600 mb-1">
-                                <span class="has-tooltip">학습 횟수 (Epochs)
-                                    <span class="tooltip-text">전체 데이터셋에 대해 경사하강법을 반복 실행할 횟수입니다.</span>
-                                </span>
-                                <span id="epochVal" class="text-blue-600 font-bold">50</span>
-                            </div>
-                            <input type="range" id="epochSlider" min="10" max="300" step="10" value="50" oninput="document.getElementById('epochVal').innerText=this.value" class="w-full accent-blue-600 cursor-pointer">
-                        </div>
-
-                        <div class="flex gap-2 pt-1">
-                            <button onclick="startGradientDescent()" id="trainBtn" class="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs transition shadow-md flex items-center justify-center gap-2">
-                                <i class="fa-solid fa-play"></i> 경사하강법 학습 실행
-                            </button>
-                            <button onclick="computeOLS()" id="olsBtn" class="py-2.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl font-bold text-xs transition flex items-center gap-1">
-                                <span class="has-tooltip">최소자승법(OLS)
-                                    <span class="tooltip-text">수학 공식으로 단번에 해석적 최적해(정확한 직선)를 산출합니다.</span>
-                                </span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <!-- Tab 3 Specific KNN Controls -->
-                    <div id="knnControls" class="hidden space-y-3">
-                        <div>
-                            <div class="flex justify-between text-xs font-semibold text-slate-600 mb-1">
-                                <span class="has-tooltip">이웃 개수 (K Value)
-                                    <span class="tooltip-text">새로운 데이터 판정 시 고려할 가장 가까운 이웃 데이터의 개수입니다.</span>
-                                </span>
-                                <span id="kVal" class="text-blue-600 font-bold">3</span>
-                            </div>
-                            <input type="range" id="kSlider" min="1" max="15" step="2" value="3" oninput="updateKValue(this.value)" class="w-full accent-blue-600 cursor-pointer">
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 3. Metrics Dashboard -->
-                <div class="bg-blue-950 text-white rounded-xl p-4 shadow-lg border border-blue-900">
-                    <h3 class="font-bold mb-3 flex items-center gap-2 text-sm text-blue-300">
-                        <i class="fa-solid fa-square-poll-round"></i> 실시간 모델 성능 & 파라미터
-                    </h3>
-
-                    <div id="metricsBox" class="grid grid-cols-2 gap-3 text-xs">
-                        <!-- Metric items dynamic injection -->
-                    </div>
-                </div>
-
-            </div>
-        </div>
-    </div>
-
-    <script>
-        // Global App State
-        let currentTab = 'linear'; // 'linear', 'logistic', 'knn'
-        let points = []; // [{x, y, class}] scaled inside [0, 1]
-        let isPredictMode = false;
-        let selectedClass = 0; // For logistic/knn
-        let animationId = null;
-
-        // Model Weights
-        let weight = 0.0;
-        let bias = 0.0;
-        let w1 = 0.0, w2 = 0.0, b_log = 0.0; // Logistic regression
-        let kKNN = 3;
-
-        // Mouse hover predict state
-        let hoverPos = null;
-
-        // Canvas Setup
-        const canvas = document.getElementById('mlCanvas');
-        const ctx = canvas.getContext('2d');
-
-        function resizeCanvas() {
-            const rect = canvas.parentElement.getBoundingClientRect();
-            canvas.width = rect.width * window.devicePixelRatio;
-            canvas.height = rect.height * window.devicePixelRatio;
-            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-            draw();
-        }
-        window.addEventListener('resize', resizeCanvas);
-
-        // Tab Switcher
-        function switchTab(tab) {
-            currentTab = tab;
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById(`tab-${tab}`).classList.add('active');
-
-            // Toggle Controls
-            const regControls = document.getElementById('regressionControls');
-            const knnControls = document.getElementById('knnControls');
-            const classBox = document.getElementById('classSelectorBox');
-            const olsBtn = document.getElementById('olsBtn');
-
-            if (tab === 'linear') {
-                regControls.classList.remove('hidden');
-                knnControls.classList.add('hidden');
-                classBox.classList.add('hidden');
-                olsBtn.classList.remove('hidden');
-            } else if (tab === 'logistic') {
-                regControls.classList.remove('hidden');
-                knnControls.classList.add('hidden');
-                classBox.classList.remove('hidden');
-                olsBtn.classList.add('hidden');
-            } else if (tab === 'knn') {
-                regControls.classList.add('hidden');
-                knnControls.classList.remove('hidden');
-                classBox.classList.remove('hidden');
-            }
-
-            renderPresets();
-            resetModelParameters();
-            draw();
-        }
-
-        // Preset Data Generator
-        function renderPresets() {
-            const container = document.getElementById('presetButtons');
-            container.innerHTML = '';
-
-            let presets = [];
-            if (currentTab === 'linear') {
-                presets = [
-                    { name: '📈 양의 상관관계', fn: loadPositiveLinear },
-                    { name: '📉 음의 상관관계', fn: loadNegativeLinear },
-                    { name: '🎲 낮은 상관관계', fn: loadLowCorrLinear },
-                    { name: '⚠️ 이상치 포함 데이터', fn: loadOutlierLinear }
-                ];
-            } else {
-                presets = [
-                    { name: '🔴🔵 선형 분리 데이터', fn: loadSeparableData },
-                    { name: '🟣 경계 중첩 데이터', fn: loadOverlappedData },
-                    { name: '🎯 이상치 포함 데이터', fn: loadOutlierClassData }
-                ];
-            }
-
-            presets.forEach(p => {
-                const btn = document.createElement('button');
-                btn.className = 'py-1.5 px-2 bg-white border border-slate-300 hover:bg-blue-50 hover:border-blue-300 rounded-lg text-xs font-semibold text-slate-700 transition truncate text-left';
-                btn.innerText = p.name;
-                btn.onclick = () => { p.fn(); showToast(`${p.name} 로드 완료`); };
-                container.appendChild(btn);
-            });
-        }
-
-        function showToast(msg) {
-            const toast = document.getElementById('toast');
-            document.getElementById('toast-msg').innerText = msg;
-            toast.classList.remove('hidden');
-            setTimeout(() => toast.classList.add('hidden'), 2500);
-        }
-
-        // Linear Presets
-        function loadPositiveLinear() {
-            points = [];
-            for(let i=0; i<25; i++) {
-                let x = 0.1 + Math.random() * 0.8;
-                let y = 0.8 * x + 0.1 + (Math.random() - 0.5) * 0.15;
-                points.push({x: clamp(x), y: clamp(y), class: 0});
-            }
-            computeOLS();
-        }
-
-        function loadNegativeLinear() {
-            points = [];
-            for(let i=0; i<25; i++) {
-                let x = 0.1 + Math.random() * 0.8;
-                let y = -0.75 * x + 0.85 + (Math.random() - 0.5) * 0.15;
-                points.push({x: clamp(x), y: clamp(y), class: 0});
-            }
-            computeOLS();
-        }
-
-        function loadLowCorrLinear() {
-            points = [];
-            for(let i=0; i<30; i++) {
-                let x = 0.1 + Math.random() * 0.8;
-                let y = 0.2 + Math.random() * 0.6;
-                points.push({x: clamp(x), y: clamp(y), class: 0});
-            }
-            computeOLS();
-        }
-
-        function loadOutlierLinear() {
-            loadPositiveLinear();
-            // Add 2 extreme outliers
-            points.push({x: 0.2, y: 0.9, class: 0});
-            points.push({x: 0.85, y: 0.15, class: 0});
-            computeOLS();
-        }
-
-        // Classification Presets
-        function loadSeparableData() {
-            points = [];
-            for(let i=0; i<15; i++) {
-                let x = 0.15 + Math.random() * 0.35;
-                let y = 0.15 + Math.random() * 0.35;
-                points.push({x: clamp(x), y: clamp(y), class: 0});
-            }
-            for(let i=0; i<15; i++) {
-                let x = 0.5 + Math.random() * 0.35;
-                let y = 0.5 + Math.random() * 0.35;
-                points.push({x: clamp(x), y: clamp(y), class: 1});
-            }
-            resetModelParameters();
-            draw();
-        }
-
-        function loadOverlappedData() {
-            points = [];
-            for(let i=0; i<20; i++) {
-                let x = 0.2 + Math.random() * 0.5;
-                let y = 0.2 + Math.random() * 0.5;
-                points.push({x: clamp(x), y: clamp(y), class: 0});
-            }
-            for(let i=0; i<20; i++) {
-                let x = 0.35 + Math.random() * 0.5;
-                let y = 0.35 + Math.random() * 0.5;
-                points.push({x: clamp(x), y: clamp(y), class: 1});
-            }
-            resetModelParameters();
-            draw();
-        }
-
-        function loadOutlierClassData() {
-            loadSeparableData();
-            points.push({x: 0.8, y: 0.8, class: 0}); // Outlier Red in Blue zone
-            points.push({x: 0.2, y: 0.2, class: 1}); // Outlier Blue in Red zone
-            draw();
-        }
-
-        function clamp(v) { return Math.max(0.02, Math.min(0.98, v)); }
-
-        function addRandomPoints(count) {
-            for(let i=0; i<count; i++) {
-                let rx = 0.08 + Math.random() * 0.84;
-                let ry = 0.08 + Math.random() * 0.84;
-                let c = currentTab === 'linear' ? 0 : selectedClass;
-                points.push({x: rx, y: ry, class: c});
-            }
-            if (currentTab === 'linear') computeOLS();
-            else draw();
-            showToast(`데이터 ${count}개 생성 완료`);
-        }
-
-        function clearData() {
-            points = [];
-            resetModelParameters();
-            draw();
-            showToast("데이터 초기화 완료");
-        }
-
-        function resetModelParameters() {
-            weight = 0.0;
-            bias = 0.5;
-            w1 = 0.0; w2 = 0.0; b_log = 0.0;
-        }
-
-        function toggleMode() {
-            isPredictMode = !isPredictMode;
-            const btnText = document.getElementById('modeToggleText');
-            const hint = document.getElementById('interactionHint');
-            const tooltip = document.getElementById('predTooltip');
-
-            if (isPredictMode) {
-                btnText.innerText = "데이터 추가 모드로 전환";
-                hint.innerText = "캔버스 위에 마우스를 올리면 실시간 예측을 수행합니다.";
-            } else {
-                btnText.innerText = "예측 모드 켜기";
-                hint.innerText = "캔버스를 좌클릭하여 데이터를 추가하세요. (우클릭: 점 삭제)";
-                tooltip.classList.add('hidden');
-            }
-            draw();
-        }
-
-        // Canvas Interactions (Click, Right-Click, Hover)
-        canvas.addEventListener('mousedown', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const mouseX = (e.clientX - rect.left) / rect.width;
-            const mouseY = 1.0 - (e.clientY - rect.top) / rect.height; // Flip Y coordinate for math style
-
-            if (e.button === 2) { // Right Click -> Delete Point
-                e.preventDefault();
-                deleteNearestPoint(mouseX, mouseY);
-                return;
-            }
-
-            if (e.button === 0 && !isPredictMode) { // Left Click -> Add Point
-                points.push({ x: mouseX, y: mouseY, class: currentTab === 'linear' ? 0 : selectedClass });
-                if (currentTab === 'linear') computeOLS();
-                else draw();
-            }
-        });
-
-        canvas.addEventListener('contextmenu', e => e.preventDefault());
-
-        canvas.addEventListener('mousemove', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const mouseX = (e.clientX - rect.left) / rect.width;
-            const mouseY = 1.0 - (e.clientY - rect.top) / rect.height;
-
-            hoverPos = { x: mouseX, y: mouseY, clientX: e.clientX, clientY: e.clientY };
-
-            if (isPredictMode) {
-                updatePredictionTooltip(mouseX, mouseY, e.clientX, e.clientY);
-            }
-            draw();
-        });
-
-        canvas.addEventListener('mouseleave', () => {
-            hoverPos = null;
-            document.getElementById('predTooltip').classList.add('hidden');
-            draw();
-        });
-
-        function deleteNearestPoint(x, y) {
-            if (points.length === 0) return;
-            let minDist = Infinity;
-            let targetIdx = -1;
-
-            points.forEach((p, idx) => {
-                let dist = Math.hypot(p.x - x, p.y - y);
-                if (dist < minDist) {
-                    minDist = dist;
-                    targetIdx = idx;
-                }
-            });
-
-            if (targetIdx !== -1 && minDist < 0.08) { // Delete radius tolerance
-                points.splice(targetIdx, 1);
-                showToast("데이터 점 1개 삭제 완료");
-                if (currentTab === 'linear') computeOLS();
-                else draw();
-            }
-        }
-
-        // OLS (Ordinary Least Squares) for Linear Regression
-        function computeOLS() {
-            if (points.length < 2) {
-                resetModelParameters();
-                draw();
-                return;
-            }
-            let n = points.length;
-            let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-            points.forEach(p => {
-                sumX += p.x;
-                sumY += p.y;
-                sumXY += p.x * p.y;
-                sumXX += p.x * p.x;
-            });
-
-            let meanX = sumX / n;
-            let meanY = sumY / n;
-
-            let num = sumXY - n * meanX * meanY;
-            let den = sumXX - n * meanX * meanX;
-
-            if (Math.abs(den) < 1e-6) weight = 0;
-            else weight = num / den;
-
-            bias = meanY - weight * meanX;
-            draw();
-        }
-
-        // Gradient Descent Animation
-        function startGradientDescent() {
-            if (points.length === 0) return;
-            const lr = parseFloat(document.getElementById('lrSlider').value);
-            const totalEpochs = parseInt(document.getElementById('epochSlider').value);
-            let epoch = 0;
-
-            if (currentTab === 'linear') {
-                weight = 0.0; bias = 0.0;
-            } else if (currentTab === 'logistic') {
-                w1 = 0.0; w2 = 0.0; b_log = 0.0;
-            }
-
-            function step() {
-                if (epoch >= totalEpochs) {
-                    showToast("학습 완료!");
-                    return;
-                }
-
-                let n = points.length;
-                if (currentTab === 'linear') {
-                    let dw = 0, db = 0;
-                    points.forEach(p => {
-                        let pred = weight * p.x + bias;
-                        let err = pred - p.y;
-                        dw += (2/n) * err * p.x;
-                        db += (2/n) * err;
-                    });
-                    weight -= lr * dw;
-                    bias -= lr * db;
-                } else if (currentTab === 'logistic') {
-                    let dw1 = 0, dw2 = 0, db = 0;
-                    points.forEach(p => {
-                        let z = w1 * p.x + w2 * p.y + b_log;
-                        let a = 1 / (1 + Math.exp(-z));
-                        let err = a - p.class;
-                        dw1 += err * p.x;
-                        dw2 += err * p.y;
-                        db += err;
-                    });
-                    w1 -= (lr / n) * dw1;
-                    w2 -= (lr / n) * dw2;
-                    b_log -= (lr / n) * db;
-                }
-
-                epoch++;
-                draw();
-                animationId = requestAnimationFrame(step);
-            }
-
-            if (animationId) cancelAnimationFrame(animationId);
-            step();
-        }
-
-        function updateKValue(val) {
-            kKNN = parseInt(val);
-            document.getElementById('kVal').innerText = kKNN;
-            draw();
-        }
-
-        function updatePredictionTooltip(x, y, clientX, clientY) {
-            const tooltip = document.getElementById('predTooltip');
-            tooltip.classList.remove('hidden');
-            const rect = canvas.getBoundingClientRect();
-            tooltip.style.left = `${clientX - rect.left + 10}px`;
-            tooltip.style.top = `${clientY - rect.top - 30}px`;
-
-            if (currentTab === 'linear') {
-                let predY = weight * x + bias;
-                tooltip.innerText = `X: ${x.toFixed(2)} ➔ 예측 Y: ${predY.toFixed(2)}`;
-            } else if (currentTab === 'logistic') {
-                let z = w1 * x + w2 * y + b_log;
-                let prob = 1 / (1 + Math.exp(-z));
-                tooltip.innerText = `확률(클래스1): ${(prob * 100).toFixed(1)}%`;
-            } else if (currentTab === 'knn') {
-                let nearest = getKNN(x, y, kKNN);
-                let class1Votes = nearest.filter(p => p.class === 1).length;
-                let predClass = class1Votes > kKNN / 2 ? 1 : 0;
-                tooltip.innerText = `KNN 예측: 클래스 ${predClass} (${class1Votes}/${kKNN} 표)`;
-            }
-        }
-
-        function getKNN(x, y, k) {
-            if (points.length === 0) return [];
-            let sorted = [...points].map(p => ({
-                ...p,
-                dist: Math.hypot(p.x - x, p.y - y)
-            })).sort((a, b) => a.dist - b.dist);
-            return sorted.slice(0, Math.min(k, points.length));
-        }
-
-        // Render Master Loop
-        function draw() {
-            const w = canvas.width / window.devicePixelRatio;
-            const h = canvas.height / window.devicePixelRatio;
-
-            ctx.clearRect(0, 0, w, h);
-
-            // Draw Background Grid Mesh for KNN decision boundaries or Logistic probabilities
-            if (currentTab === 'knn' && points.length > 0) {
-                drawKNNGrid(w, h);
-            } else if (currentTab === 'logistic') {
-                drawLogisticHeatmap(w, h);
-            }
-
-            // Draw Coordinate Grid Lines
-            drawGridLines(w, h);
-
-            // Draw Points & Model Specific Overlays
-            if (currentTab === 'linear') {
-                drawLinearRegression(w, h);
-            } else if (currentTab === 'logistic') {
-                drawLogisticBoundary(w, h);
-            } else if (currentTab === 'knn') {
-                drawKNNConnections(w, h);
-            }
-
-            drawPoints(w, h);
-            updateMetricsDashboard();
-            document.getElementById('pointCountBadge').innerText = `데이터: ${points.length}개`;
-        }
-
-        function drawGridLines(w, h) {
-            ctx.strokeStyle = '#334155';
-            ctx.lineWidth = 0.5;
-            ctx.beginPath();
-            for(let i=0.1; i<1.0; i+=0.1) {
-                ctx.moveTo(i * w, 0); ctx.lineTo(i * w, h);
-                ctx.moveTo(0, i * h); ctx.lineTo(w, i * h);
-            }
-            ctx.stroke();
-        }
-
-        function drawPoints(w, h) {
-            points.forEach(p => {
-                let cx = p.x * w;
-                let cy = (1 - p.y) * h;
-
-                ctx.beginPath();
-                ctx.arc(cx, cy, 7, 0, Math.PI * 2);
-                if (currentTab === 'linear') {
-                    ctx.fillStyle = '#3b82f6';
-                } else {
-                    ctx.fillStyle = p.class === 0 ? '#ef4444' : '#3b82f6';
-                }
-                ctx.fill();
-                ctx.strokeStyle = '#ffffff';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-            });
-        }
-
-        function drawLinearRegression(w, h) {
-            if (points.length === 0) return;
-
-            // Draw Residuals (Error Lines)
-            ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([3, 3]);
-            points.forEach(p => {
-                let predY = weight * p.x + bias;
-                let cx = p.x * w;
-                let cy = (1 - p.y) * h;
-                let predCy = (1 - predY) * h;
-                ctx.beginPath();
-                ctx.moveTo(cx, cy);
-                ctx.lineTo(cx, predCy);
-                ctx.stroke();
-            });
-            ctx.setLineDash([]);
-
-            // Draw Fitted Line
-            let y0 = weight * 0 + bias;
-            let y1 = weight * 1 + bias;
-
-            ctx.strokeStyle = '#38bdf8';
-            ctx.lineWidth = 3.5;
-            ctx.beginPath();
-            ctx.moveTo(0, (1 - y0) * h);
-            ctx.lineTo(w, (1 - y1) * h);
-            ctx.stroke();
-        }
-
-        function drawLogisticHeatmap(w, h) {
-            if (Math.abs(w1) < 1e-4 && Math.abs(w2) < 1e-4) return;
-            const step = 8;
-            for(let x=0; x<w; x+=step) {
-                let nx = x / w;
-                for(let y=0; y<h; y+=step) {
-                    let ny = 1.0 - (y / h);
-                    let z = w1 * nx + w2 * ny + b_log;
-                    let prob = 1 / (1 + Math.exp(-z));
-                    
-                    ctx.fillStyle = prob > 0.5 ? `rgba(59, 130, 246, ${ (prob - 0.5) * 0.5 })` : `rgba(239, 68, 68, ${ (0.5 - prob) * 0.5 })`;
-                    ctx.fillRect(x, y, step, step);
-                }
-            }
-        }
-
-        function drawLogisticBoundary(w, h) {
-            if (Math.abs(w1) < 1e-4 && Math.abs(w2) < 1e-4) return;
-            // Line equation: w1*x + w2*y + b = 0 => y = (-w1*x - b) / w2
-            ctx.strokeStyle = '#f59e0b';
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            let x0 = 0, y0 = (-w1 * 0 - b_log) / w2;
-            let x1 = 1, y1 = (-w1 * 1 - b_log) / w2;
-            ctx.moveTo(x0 * w, (1 - y0) * h);
-            ctx.lineTo(x1 * w, (1 - y1) * h);
-            ctx.stroke();
-        }
-
-        function drawKNNGrid(w, h) {
-            const step = 10;
-            for(let x=0; x<w; x+=step) {
-                let nx = x / w;
-                for(let y=0; y<h; y+=step) {
-                    let ny = 1.0 - (y / h);
-                    let nearest = getKNN(nx, ny, kKNN);
-                    let c1Votes = nearest.filter(p => p.class === 1).length;
-                    
-                    ctx.fillStyle = c1Votes > kKNN/2 ? 'rgba(59, 130, 246, 0.15)' : 'rgba(239, 68, 68, 0.15)';
-                    ctx.fillRect(x, y, step, step);
-                }
-            }
-        }
-
-        function drawKNNConnections(w, h) {
-            if (isPredictMode && hoverPos && points.length > 0) {
-                let nearest = getKNN(hoverPos.x, hoverPos.y, kKNN);
-                ctx.strokeStyle = '#f59e0b';
-                ctx.lineWidth = 1.5;
-                ctx.setLineDash([4, 4]);
-
-                nearest.forEach(np => {
-                    ctx.beginPath();
-                    ctx.moveTo(hoverPos.x * w, (1 - hoverPos.y) * h);
-                    ctx.lineTo(np.x * w, (1 - np.y) * h);
-                    ctx.stroke();
-                });
-                ctx.setLineDash([]);
-            }
-        }
-
-        // Metrics Calculation & UI Render
-        function updateMetricsDashboard() {
-            const container = document.getElementById('metricsBox');
-
-            if (currentTab === 'linear') {
-                let mse = 0, r2 = 0;
-                if (points.length > 0) {
-                    let sumErr = 0, sumTot = 0;
-                    let meanY = points.reduce((acc, p) => acc + p.y, 0) / points.length;
-                    points.forEach(p => {
-                        let pred = weight * p.x + bias;
-                        sumErr += Math.pow(p.y - pred, 2);
-                        sumTot += Math.pow(p.y - meanY, 2);
-                    });
-                    mse = sumErr / points.length;
-                    r2 = sumTot === 0 ? 1 : 1 - (sumErr / sumTot);
-                }
-
-                container.innerHTML = `
-                    <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                        <span class="text-slate-400 block text-[11px] has-tooltip">MSE (평균제곱오차)
-                            <span class="tooltip-text">실제값과 예측값 차이의 제곱 평균입니다. 0에 가까울수록 모델 정확도가 높습니다.</span>
-                        </span>
-                        <span class="text-base font-bold text-emerald-400">${mse.toFixed(4)}</span>
-                    </div>
-                    <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                        <span class="text-slate-400 block text-[11px] has-tooltip">R² Score (결정계수)
-                            <span class="tooltip-text">회귀 모델이 데이터를 얼마나 설명하는지 나타냅니다. 1에 가까울수록 완벽한 모델입니다.</span>
-                        </span>
-                        <span class="text-base font-bold text-amber-400">${r2.toFixed(3)}</span>
-                    </div>
-                    <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                        <span class="text-slate-400 block text-[11px] has-tooltip">기울기 (Weight w)
-                            <span class="tooltip-text">X가 1단위 증가할 때 Y의 변화량 추정치입니다.</span>
-                        </span>
-                        <span class="text-base font-bold text-sky-400">${weight.toFixed(3)}</span>
-                    </div>
-                    <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                        <span class="text-slate-400 block text-[11px] has-tooltip">절편 (Bias b)
-                            <span class="tooltip-text">X가 0일 때 예측되는 Y의 기본값입니다.</span>
-                        </span>
-                        <span class="text-base font-bold text-purple-400">${bias.toFixed(3)}</span>
-                    </div>
-                `;
-            } else if (currentTab === 'logistic') {
-                let loss = 0, acc = 0;
-                if (points.length > 0) {
-                    let correct = 0;
-                    points.forEach(p => {
-                        let z = w1 * p.x + w2 * p.y + b_log;
-                        let prob = Math.max(1e-5, Math.min(1 - 1e-5, 1 / (1 + Math.exp(-z))));
-                        loss += -(p.class * Math.log(prob) + (1 - p.class) * Math.log(1 - prob));
-                        let predClass = prob > 0.5 ? 1 : 0;
-                        if (predClass === p.class) correct++;
-                    });
-                    loss /= points.length;
-                    acc = (correct / points.length) * 100;
-                }
-
-                container.innerHTML = `
-                    <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                        <span class="text-slate-400 block text-[11px] has-tooltip">Log Loss (교차 엔트로피)
-                            <span class="tooltip-text">분류 확률과 실제 클래스 차이를 측정하는 손실 함수입니다. 0에 가까울수록 좋습니다.</span>
-                        </span>
-                        <span class="text-base font-bold text-emerald-400">${loss.toFixed(4)}</span>
-                    </div>
-                    <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                        <span class="text-slate-400 block text-[11px] has-tooltip">정확도 (Accuracy)
-                            <span class="tooltip-text">전체 데이터 중 맞게 분류한 데이터의 비율입니다.</span>
-                        </span>
-                        <span class="text-base font-bold text-amber-400">${acc.toFixed(1)}%</span>
-                    </div>
-                `;
-            } else if (currentTab === 'knn') {
-                let looAcc = 0;
-                if (points.length > 1) {
-                    let correct = 0;
-                    points.forEach((p, idx) => {
-                        let others = points.filter((_, i) => i !== idx);
-                        let sorted = others.map(op => ({...op, dist: Math.hypot(op.x - p.x, op.y - p.y)}))
-                                           .sort((a,b) => a.dist - b.dist);
-                        let topK = sorted.slice(0, Math.min(kKNN, others.length));
-                        let c1 = topK.filter(k => k.class === 1).length;
-                        let pred = c1 > topK.length / 2 ? 1 : 0;
-                        if (pred === p.class) correct++;
-                    });
-                    looAcc = (correct / points.length) * 100;
-                }
-
-                container.innerHTML = `
-                    <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                        <span class="text-slate-400 block text-[11px] has-tooltip">K 값 (Neighbor Count)
-                            <span class="tooltip-text">새 점 판정 시 비교할 가장 가까운 이웃 데이터 수입니다.</span>
-                        </span>
-                        <span class="text-base font-bold text-sky-400">${kKNN}</span>
-                    </div>
-                    <div class="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                        <span class="text-slate-400 block text-[11px] has-tooltip">LOO 교차검증 정확도
-                            <span class="tooltip-text">Leave-One-Out 검증으로 측정한 KNN 분류 예측 정확도입니다.</span>
-                        </span>
-                        <span class="text-base font-bold text-amber-400">${looAcc.toFixed(1)}%</span>
-                    </div>
-                `;
-            }
-        }
-
-        // CSV File Reader Parser & Min-Max Scaler
-        function handleCSVUpload(e) {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = function(evt) {
-                const text = evt.target.result;
-                const lines = text.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
-                if (lines.length < 2) {
-                    alert("유효한 CSV 파일 데이터가 부족합니다.");
-                    return;
-                }
-
-                let parsed = [];
-                for(let i=1; i<lines.length; i++) {
-                    let parts = lines[i].split(',').map(Number);
-                    if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-                        parsed.push({
-                            xRaw: parts[0],
-                            yRaw: parts[1],
-                            cRaw: parts[2] !== undefined && !isNaN(parts[2]) ? parts[2] : 0
-                        });
-                    }
-                }
-
-                if (parsed.length === 0) {
-                    alert("숫자 컬럼 데이터 추출 실패");
-                    return;
-                }
-
-                // Auto Normalization (Min-Max Scaling)
-                let minX = Math.min(...parsed.map(p => p.xRaw));
-                let maxX = Math.max(...parsed.map(p => p.xRaw));
-                let minY = Math.min(...parsed.map(p => p.yRaw));
-                let maxY = Math.max(...parsed.map(p => p.yRaw));
-
-                let rangeX = maxX - minX || 1;
-                let rangeY = maxY - minY || 1;
-
-                points = parsed.map(p => ({
-                    x: clamp(0.1 + ((p.xRaw - minX) / rangeX) * 0.8),
-                    y: clamp(0.1 + ((p.yRaw - minY) / rangeY) * 0.8),
-                    class: p.cRaw > 0 ? 1 : 0
-                }));
-
-                showToast(`CSV 데이터 ${points.length}개 정규화 변환 완료!`);
-                if (currentTab === 'linear') computeOLS();
-                else draw();
-            };
-            reader.readAsText(file);
-        }
-
-        // Initialization on Load
-        window.onload = function() {
-            resizeCanvas();
-            renderPresets();
-            loadPositiveLinear();
-        };
-    </script>
-</body>
-</html>
-"""
-
-# Title and App Header
-st.title("🤖 고등 머신러닝 플레이그라운드")
-st.markdown("**개념을 직접 클릭하고 조작하며 이해하는 머신러닝 탐구 웹앱 (수업용)**")
-
-# Sidebar Setup
+    return True, f"검증 완료: 총 {len(df)}행, 숫자형 열 {len(numeric_cols)}개"
+
+def calculate_metrics(y_true, y_pred, num_features):
+    """모델 평가 지표 (R2, Adj-R2, MAE, MSE, RMSE)를 계산합니다."""
+    n = len(y_true)
+    r2 = r2_score(y_true, y_pred)
+    
+    # 조정된 R² (Adjusted R-squared)
+    if n - num_features - 1 > 0:
+        adj_r2 = 1 - (1 - r2) * (n - 1) / (n - num_features - 1)
+    else:
+        adj_r2 = r2
+        
+    mae = mean_absolute_error(y_true, y_pred)
+    mse = mean_squared_error(y_true, y_pred)
+    rmse = np.sqrt(mse)
+    
+    return {
+        'R2': r2,
+        'Adj_R2': adj_r2,
+        'MAE': mae,
+        'MSE': mse,
+        'RMSE': rmse
+    }
+
+# ==========================================
+# Sidebar UI
+# ==========================================
 with st.sidebar:
-    st.header("📌 수업 가이드 & 도구")
+    st.title("🧪 인공지능 기초")
+    st.caption("고등학교 2학년 선형회귀 실습 도구")
+    st.markdown("---")
     
-    st.info("💡 **수업 활용 팁**\n- 캔버스 클릭으로 데이터점을 직접 추가해보세요.\n- **우클릭**으로 특정 점만 삭제할 수 있습니다.\n- 용어 옆 **물음표(?)**에 마우스를 대면 개념 설명이 나옵니다.")
-    
-    st.divider()
-    
-    # CSV Helper Generator for Class Test
-    st.subheader("📥 수업용 실습 CSV 다운로드")
-    st.caption("학생들이 직접 다운로드받아 캔버스에 업로드할 수 있는 예제 파일입니다.")
-    
-    # 1. Study time & Score CSV
-    df_linear = pd.DataFrame({
-        "StudyHours_X": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        "ExamScore_Y": [52, 58, 63, 68, 74, 80, 85, 89, 93, 98]
-    })
-    csv_bytes1 = df_linear.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📄 [선형회귀] 공부시간-성적.csv",
-        data=csv_bytes1,
-        file_name="study_hours_vs_score.csv",
-        mime="text/csv"
-    )
-    
-    # 2. Classification CSV
-    df_class = pd.DataFrame({
-        "Feature1_X1": [1.2, 1.8, 2.3, 2.9, 6.1, 6.8, 7.5, 8.2],
-        "Feature2_X2": [1.5, 2.1, 1.9, 2.7, 7.2, 6.9, 8.1, 7.8],
-        "Class_Label": [0, 0, 0, 0, 1, 1, 1, 1]
-    })
-    csv_bytes2 = df_class.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📄 [분류] 2차원_범주형_데이터.csv",
-        data=csv_bytes2,
-        file_name="classification_sample.csv",
-        mime="text/csv"
-    )
-
-# Render main interactive canvas view via HTML component
-st.components.v1.html(HTML_CODE, height=920, scrolling=True)
-
-# Deployment Guide Expander
-with st.expander("🚀 깃허브(GitHub) & 스트림릿 커뮤니티 클라우드 배포 방법 안내", expanded=False):
+    st.subheader("📌 주요 용어 요약")
     st.markdown("""
-    ### 1단계: 깃허브(GitHub) 저장소(Repository) 생성
-    1. [GitHub](https://github.com) 로그인 후 **New Repository** 클릭
-    2. 저장소 이름(Repository Name) 입력 (예: `ml-playground`)
-    3. **Public** 선택 후 `Create repository` 클릭
-
-    ### 2단계: 코드 업로드
-    저장소에 다음 두 개 파일을 생성/업로드합니다:
-    1. **`app.py`**: 위의 파이썬 소스 코드를 그대로 붙여넣기 합니다.
-    2. **`requirements.txt`**: 아래 패키지 목록을 파일로 추가합니다.
-    ```text
-    streamlit
-    pandas
-    ```
-
-    ### 3단계: Streamlit Community Cloud 배포
-    1. [share.streamlit.io](https://share.streamlit.io) 접속 및 깃허브 계정 연동
-    2. **New app** 버튼 클릭
-    3. 방금 만든 Repository, Branch(`main`), Main file path(`app.py`)를 지정하고 **Deploy!** 버튼 클릭
-    4. 생성된 URL 주소를 학생들에게 공유하면 어디서나 접근 가능한 수업용 도구가 완성이 됩니다!
+    * **독립변수 ($X$)**: 원인이 되는 입력 변수
+    * **종속변수 ($y$)**: 결과가 되는 출력 변수
+    * **기울기 ($b_1$)**: $X$가 1 증가할 때 $y$의 변화량
+    * **절편 ($b_0$)**: $X=0$일 때 $y$의 기본값
+    * **예측값 ($\hat{y}$)**: 모델이 계산한 $y$ 값
+    * **잔차 (Residual)**: 실제값($y$) - 예측값($\hat{y}$)
     """)
+    st.markdown("---")
+    st.info("💡 Tip: 1단계부터 순서대로 학습을 진행해보세요.")
+
+# Main Title
+st.title("📊 CSV 데이터로 배우는 선형회귀 실험실")
+st.markdown("---")
+
+# ==========================================
+# Tabs Setup
+# ==========================================
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "1. 학습 안내",
+    "2. CSV 데이터 업로드",
+    "3. 데이터 탐색",
+    "4. 단순선형회귀",
+    "5. 다중선형회귀",
+    "6. 모델 평가 및 비교"
+])
+
+# ------------------------------------------
+# Tab 1: 학습 안내
+# ------------------------------------------
+with tab1:
+    st.header("📘 선형회귀 기본 개념 익히기")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("### 🔍 회귀(Regression)와 선형회귀")
+        st.write("""
+        * **회귀**: 여러 변수 사이의 관계를 파악하여 연속적인 숫자를 예측하는 기법입니다.
+        * **선형회귀**: 데이터의 경향성을 가장 잘 나타내는 **'직선(Line)'**을 찾는 알고리즘입니다.
+        """)
+        
+        st.success("### 🎯 입력과 출력 변수")
+        st.write("""
+        * **독립변수 ($X$)**: 원인이 되는 데이터 (예: 기온, 풍속, 공부 시간)
+        * **종속변수 ($y$)**: 결과가 되는 데이터 (예: 미세먼지 농도, 시험 점수)
+        """)
+        
+    with col2:
+        st.warning("### 📐 단순선형회귀 vs 다중선형회귀")
+        st.write("""
+        * **단순선형회귀**: 독립변수 $X$가 **1개**일 때 사용합니다.
+        * **다중선형회귀**: 독립변수 $X$가 **2개 이상**일 때 사용합니다.
+        """)
+        
+        st.error("### ⚠️ 상관관계 vs 인과관계")
+        st.write("""
+        * **상관관계**: 두 변수가 함께 변하는 경향 (예: 아이스크림 판매량과 수영장 사고 수)
+        * **인과관계**: 한 변수가 다른 변수의 직접적인 원인임
+        * **주의**: 상관관계가 높다고 해서 반드시 원인과 결과(인과관계)인 것은 아닙니다!
+        """)
+
+    st.markdown("---")
+    st.subheader("🧮 선형회귀 수식")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**단순선형회귀 수식 ($X$가 1개)**")
+        st.latex(r"\hat{y} = b_0 + b_1 x")
+        st.caption("👉 $b_1$: 기울기(Coefficient), $b_0$: 절편(Intercept)")
+    with c2:
+        st.markdown("**다중선형회귀 수식 ($X$가 $n$개)**")
+        st.latex(r"\hat{y} = b_0 + b_1 x_1 + b_2 x_2 + \dots + b_n x_n")
+        st.caption("👉 각 $x_i$ 마다 고유한 기울기 $b_i$가 부여됩니다.")
+
+    st.markdown("---")
+    st.subheader("🎯 오차와 잔차(Residual)")
+    st.markdown("""
+    - **실제값 ($y$)**: 실제 측정된 데이터
+    - **예측값 ($\hat{y}$)**: 회귀선 상에서 모델이 예측한 값
+    - **잔차 (Residual)** = **실제값 ($y$) - 예측값 ($\hat{y}$)**
+    - 선형회귀는 데이터 전체의 **잔차 제곱의 합(SSE)을 최소화**하는 최적의 직선을 찾습니다.
+    """)
+
+    with st.expander("❓ [탐구 질문] 선형회귀 기본 개념"):
+        st.markdown("""
+        1. 독립변수와 종속변수를 실생활 예시로 각각 1가지씩 들어보세요.
+        2. 단순선형회귀와 다중선형회귀의 가장 핵심적인 차이점은 무엇인가요?
+        3. 상관관계가 높지만 인과관계는 아닌 사례를 떠올려보세요.
+        """)
+
+# ------------------------------------------
+# Tab 2: CSV 데이터 업로드
+# ------------------------------------------
+with tab2:
+    st.header("📂 데이터 파일 불러오기")
+    
+    col_up, col_sample = st.columns([2, 1])
+    
+    with col_up:
+        uploaded_file = st.file_uploader("사용할 CSV 파일을 업로드하세요 (UTF-8, CP949 지원)", type=["csv"])
+    
+    with col_sample:
+        st.write(" **실습용 데이터가 없으신가요?**")
+        sample_df = generate_sample_data()
+        csv_bytes = sample_df.to_csv(index=False).encode('utf-8-sig')
+        
+        st.download_button(
+            label="📥 미세먼지 예제 CSV 다운로드",
+            data=csv_bytes,
+            file_name="pm25_weather_data.csv",
+            mime="text/csv",
+            help="기상 변수와 미세먼지(PM2.5) 데이터가 포함된 샘플 CSV를 받습니다."
+        )
+        if st.button("🚀 예제 데이터 바로 적용하기"):
+            st.session_state['df'] = sample_df
+            st.success("예제 데이터가 적용되었습니다!")
+
+    if uploaded_file is not None:
+        df_loaded = load_csv(uploaded_file)
+        if df_loaded is not None:
+            st.session_state['df'] = df_loaded
+
+    df = st.session_state['df']
+
+    if df is not None:
+        st.markdown("---")
+        is_valid, msg = validate_data(df)
+        
+        if is_valid:
+            st.success(f"✅ 데이터 로드 성공! ({msg})")
+        else:
+            st.error(f"⚠️ {msg}")
+        
+        if len(df) < 30 and len(df) >= 10:
+            st.warning("⚠️ 데이터 행 수가 30개 미만으로 적습니다. 모델 학습 결과 해석 시 주의하세요!")
+
+        st.subheader("🔍 업로드된 데이터 미리보기")
+        st.dataframe(df.head(10), use_container_width=True)
+        
+        # 데이터 요약 정보
+        st.subheader("📊 데이터 기본 정보")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("전체 행 수", f"{df.shape[0]} 개")
+        m2.metric("전체 열 수", f"{df.shape[1]} 개")
+        
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+        
+        m3.metric("숫자형 열", f"{len(num_cols)} 개")
+        m4.metric("문자형 열", f"{len(cat_cols)} 개")
+        
+        st.subheader("📌 열별 데이터 타입 및 결측치 현황")
+        info_df = pd.DataFrame({
+            "데이터 타입": df.dtypes.astype(str),
+            "결측치 개수": df.isnull().sum(),
+            "결측치 비율(%)": np.round((df.isnull().sum() / len(df)) * 100, 2)
+        })
+        st.dataframe(info_df.T, use_container_width=True)
+        
+    else:
+        st.info("👆 상단에서 CSV 파일을 업로드하거나 [예제 데이터 바로 적용하기] 버튼을 눌러주세요.")
+
+    with st.expander("❓ [탐구 질문] CSV 데이터 업로드"):
+        st.markdown("""
+        1. 내가 수집한 데이터에서 독립변수로 적합한 열과 종속변수로 적합한 열은 무엇인가요?
+        2. 결측치(Missing Value)가 존재하는 경우 선형회귀 모델에 어떤 영향을 줄까요?
+        """)
+
+# ------------------------------------------
+# Tab 3: 데이터 탐색 (EDA)
+# ------------------------------------------
+with tab3:
+    st.header("📊 탐색적 데이터 분석 (EDA)")
+    
+    df = st.session_state['df']
+    
+    if df is None:
+        st.warning("먼저 '2. CSV 데이터 업로드' 탭에서 데이터를 업로드해주세요.")
+    else:
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if len(num_cols) < 2:
+            st.error("숫자형 변수가 2개 이상 필요합니다.")
+        else:
+            st.subheader("1️⃣ 기술통계량 확인")
+            st.dataframe(df[num_cols].describe().T, use_container_width=True)
+            
+            st.markdown("---")
+            st.subheader("2️⃣ 변수별 히스토그램 & 두 변수 산점도")
+            
+            col_eda1, col_eda2 = st.columns(2)
+            
+            with col_eda1:
+                st.markdown("**히스토그램 (단일 변수 분포)**")
+                selected_hist_col = st.selectbox("분포를 볼 변수 선택", num_cols, key="hist_select")
+                fig_hist = px.histogram(
+                    df, x=selected_hist_col, 
+                    title=f"{selected_hist_col} 분포",
+                    marginal="rug",
+                    color_discrete_sequence=['#4C78A8']
+                )
+                fig_hist.update_layout(xaxis_title=selected_hist_col, yaxis_title="빈도수")
+                st.plotly_chart(fig_hist, use_container_width=True)
+                
+            with col_eda2:
+                st.markdown("**산점도 (두 변수 간 관계)**")
+                x_scatter = st.selectbox("X축 변수 선택", num_cols, index=0, key="scat_x")
+                y_scatter = st.selectbox("Y축 변수 선택", num_cols, index=min(1, len(num_cols)-1), key="scat_y")
+                
+                fig_scat = px.scatter(
+                    df, x=x_scatter, y=y_scatter,
+                    title=f"{x_scatter} vs {y_scatter} 산점도",
+                    color_discrete_sequence=['#E15759'],
+                    trendline="ols"
+                )
+                fig_scat.update_layout(xaxis_title=x_scatter, yaxis_title=y_scatter)
+                st.plotly_chart(fig_scat, use_container_width=True)
+
+            # 산점도 체크리스트 질문
+            st.info(f"""
+            **💡 [{x_scatter}] 와 [{y_scatter}] 의 산점도 관찰 질문:**
+            1. 두 변수는 양(+)의 관계인가요, 음(-)의 관계인가요?
+            2. 데이터 점들이 하나의 직선에 가깝게 모여 있나요?
+            3. 다른 점들과 유난히 떨어진 이상치(Outlier)가 보이나요?
+            4. 두 변수의 관계가 관찰된다고 해서 바로 '원인과 결과(인과관계)'라고 할 수 있을까요?
+            """)
+
+            st.markdown("---")
+            st.subheader("3️⃣ 상관계수(Correlation) 분석")
+            
+            corr_df = df[num_cols].corr()
+            
+            col_corr1, col_corr2 = st.columns([1, 1])
+            with col_corr1:
+                st.markdown("**상관계수 표**")
+                st.dataframe(corr_df.style.background_gradient(cmap='coolwarm').format("{:.3f}"), use_container_width=True)
+            
+            with col_corr2:
+                st.markdown("**상관계수 히트맵**")
+                fig_heatmap = px.imshow(
+                    corr_df, 
+                    text_auto=".2f", 
+                    color_continuous_scale="RdBu_r",
+                    zmin=-1, zmax=1,
+                    title="상관계수 히트맵"
+                )
+                st.plotly_chart(fig_heatmap, use_container_width=True)
+
+            st.success("""
+            **📖 상관계수($r$)의 범위와 해석 기준:**
+            * **$+1.0$에 가까움**: 강한 양의 상관관계 ($X$가 증가하면 $y$도 증가)
+            * **$0.0$ 근처**: 상관관계 거의 없음 ($X$와 $y$ 사이에 직선 경향성이 없음)
+            * **$-1.0$에 가까움**: 강한 음의 상관관계 ($X$가 증가하면 $y$는 감소)
+            """)
+
+    with st.expander("❓ [탐구 질문] 데이터 탐색"):
+        st.markdown("""
+        1. 산점도는 두 변수 사이에 어떤 관계가 있다고 보여주나요?
+        2. 상관계수가 높다고 해서 반드시 선형회귀 모델의 성능이 완벽할까요?
+        """)
+
+# ------------------------------------------
+# Tab 4: 단순선형회귀
+# ------------------------------------------
+with tab4:
+    st.header("📉 단순선형회귀 (Simple Linear Regression)")
+    st.caption("독립변수 1개를 사용하여 종속변수를 예측합니다.")
+    
+    df = st.session_state['df']
+    
+    if df is None:
+        st.warning("먼저 '2. CSV 데이터 업로드' 탭에서 데이터를 업로드해주세요.")
+    else:
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if len(num_cols) < 2:
+            st.error("숫자형 변수가 최소 2개 이상 필요합니다.")
+        else:
+            col_sel1, col_sel2, col_sel3 = st.columns(3)
+            with col_sel1:
+                x_col = st.selectbox("독립변수 (X) 선택", num_cols, index=0, key="simple_x")
+            with col_sel2:
+                # y는 X와 다른 열을 기본 선택
+                default_y_idx = 1 if len(num_cols) > 1 else 0
+                y_col = st.selectbox("종속변수 (y) 선택", num_cols, index=default_y_idx, key="simple_y")
+            with col_sel3:
+                test_size = st.slider("테스트 데이터 비율 (%)", min_value=10, max_value=40, value=20, step=5) / 100.0
+
+            if x_col == y_col:
+                st.error("⚠️ 독립변수(X)와 종속변수(y)는 같은 열일 수 없습니다. 서로 다른 열을 선택하세요.")
+            else:
+                # 1. 결측치 제거 및 데이터 준비
+                clean_df = df[[x_col, y_col]].dropna()
+                X = clean_df[[x_col]]
+                y = clean_df[y_col]
+                
+                # 2. Train / Test 분리
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+                
+                # 3. 모델 학습
+                model = LinearRegression()
+                model.fit(X_train, y_train)
+                
+                # 4. 예측 및 평가
+                y_pred_test = model.predict(X_test)
+                metrics = calculate_metrics(y_test, y_pred_test, num_features=1)
+                
+                # 결과 세션 저장
+                coef = model.coef_[0]
+                intercept = model.intercept_
+                corr_val = clean_df.corr().iloc[0, 1]
+                
+                st.session_state['simple_model_results'] = {
+                    'x_col': x_col,
+                    'y_col': y_col,
+                    'coef': coef,
+                    'intercept': intercept,
+                    'metrics': metrics,
+                    'X_test': X_test,
+                    'y_test': y_test,
+                    'y_pred_test': y_pred_test
+                }
+
+                st.markdown("---")
+                st.subheader("📊 1. 학습 결과 요약")
+                
+                c_m1, c_m2, c_m3, c_m4 = st.columns(4)
+                c_m1.metric("학습 데이터 수", f"{len(X_train)}개")
+                c_m2.metric("테스트 데이터 수", f"{len(X_test)}개")
+                c_m3.metric("기울기 (Slope, b1)", f"{coef:.4f}")
+                c_m4.metric("절편 (Intercept, b0)", f"{intercept:.4f}")
+
+                # 회귀식 표시
+                st.info(f"📐 **학습된 단순선형회귀식**:  \n`예측 {y_col} = {coef:.4f} × {x_col} + ({intercept:.4f})`")
+
+                # 기울기 자동 해석 문구
+                direction = "증가" if coef > 0 else "감소"
+                st.success(f"💡 **기울기 자동 해석**: `{x_col}`이(가) **1** 만큼 증가할 때, `{y_col}` 예측값은 평균적으로 약 **{abs(coef):.4f}** 만큼 **{direction}**합니다. (단, 이는 데이터상의 경향성일 뿐 인과관계를 의미하지 않습니다.)")
+
+                st.markdown("---")
+                st.subheader("📈 2. 회귀선 및 잔차 시각화")
+                
+                col_p1, col_p2 = st.columns(2)
+                
+                with col_p1:
+                    st.markdown("**산점도와 추세선 (Train vs Test)**")
+                    fig_simple = go.Figure()
+                    
+                    # Train Data
+                    fig_simple.add_trace(go.Scatter(
+                        x=X_train[x_col], y=y_train, mode='markers', name='학습 데이터(Train)',
+                        marker=dict(color='#1f77b4', opacity=0.6)
+                    ))
+                    # Test Data
+                    fig_simple.add_trace(go.Scatter(
+                        x=X_test[x_col], y=y_test, mode='markers', name='테스트 데이터(Test)',
+                        marker=dict(color='#ff7f0e', size=8)
+                    ))
+                    # Regression Line
+                    x_range = np.linspace(X[x_col].min(), X[x_col].max(), 100)
+                    y_range = model.predict(x_range.reshape(-1, 1))
+                    fig_simple.add_trace(go.Scatter(
+                        x=x_range, y=y_range, mode='lines', name='선형 회귀선',
+                        line=dict(color='red', width=3)
+                    ))
+                    
+                    fig_simple.update_layout(xaxis_title=x_col, yaxis_title=y_col, title="데이터와 추세선")
+                    st.plotly_chart(fig_simple, use_container_width=True)
+
+                with col_p2:
+                    st.markdown("**테스트 데이터의 잔차(Residual) 시각화**")
+                    fig_res = go.Figure()
+                    
+                    # Test 데이터 실제 점
+                    fig_res.add_trace(go.Scatter(
+                        x=X_test[x_col], y=y_test, mode='markers', name='실제값(Test)',
+                        marker=dict(color='#ff7f0e', size=8)
+                    ))
+                    # 회귀선
+                    fig_res.add_trace(go.Scatter(
+                        x=x_range, y=y_range, mode='lines', name='선형 회귀선',
+                        line=dict(color='red', width=2)
+                    ))
+                    # 잔차 선 그리기
+                    for x_i, y_i, y_p in zip(X_test[x_col], y_test, y_pred_test):
+                        fig_res.add_trace(go.Scatter(
+                            x=[x_i, x_i], y=[y_i, y_p], mode='lines',
+                            line=dict(color='gray', width=1, dash='dot'),
+                            showlegend=False
+                        ))
+                        
+                    fig_res.update_layout(xaxis_title=x_col, yaxis_title=y_col, title="실제값에서 회귀선까지의 거리 (잔차)")
+                    st.plotly_chart(fig_res, use_container_width=True)
+
+                st.markdown("---")
+                st.subheader("🔮 3. 새로운 데이터 예측 시뮬레이터")
+                
+                min_val = float(X[x_col].min())
+                max_val = float(X[x_col].max())
+                mean_val = float(X[x_col].mean())
+                
+                input_x = st.number_input(
+                    f"새로운 `{x_col}` 값을 입력하세요:",
+                    min_value=min_val - (max_val - min_val),
+                    max_value=max_val + (max_val - min_val),
+                    value=mean_val
+                )
+                
+                pred_y = model.predict([[input_x]])[0]
+                
+                st.metric(label=f"예측된 `{y_col}` 값", value=f"{pred_y:.2f}")
+                st.warning("⚠️ 이 값은 데이터에서 학습한 선형적인 경향을 이용한 예측값이며 실제값과 다를 수 있습니다.")
+                
+                if pred_y < 0:
+                    st.error("💡 **선형회귀의 한계**: 예측 결과가 음수(-)로 나타났습니다. 미세먼지나 가격 등 현실에서는 0 이하가 될 수 없는 변수라도 선형회귀 직선은 음수를 예측할 수 있는 한계가 있습니다.")
+
+    with st.expander("❓ [탐구 질문] 단순선형회귀"):
+        st.markdown("""
+        1. 회귀선은 모든 데이터 점을 반드시 지나가나요? 지나가지 않는다면 그 이유는 무엇일까요?
+        2. 기울기의 부호(양수/음수)는 두 변수 사이의 어떤 관점과 연결되나요?
+        3. 잔차가 양수인 경우, 실제값과 예측값 중 어느 것이 더 큰가요?
+        """)
+
+# ------------------------------------------
+# Tab 5: 다중선형회귀
+# ------------------------------------------
+with tab5:
+    st.header("📉 다중선형회귀 (Multiple Linear Regression)")
+    st.caption("여러 개의 독립변수(X)를 동시에 활용하여 종속변수(y)를 예측합니다.")
+    
+    df = st.session_state['df']
+    
+    if df is None:
+        st.warning("먼저 '2. CSV 데이터 업로드' 탭에서 데이터를 업로드해주세요.")
+    else:
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if len(num_cols) < 3:
+            st.error("다중선형회귀를 진행하려면 최소 3개 이상의 숫자형 열이 필요합니다.")
+        else:
+            col_m_y, col_m_opt = st.columns([1, 2])
+            
+            with col_m_y:
+                y_multi_col = st.selectbox("종속변수 (y) 선택", num_cols, index=len(num_cols)-1, key="multi_y")
+            
+            # y 변수를 제외한 후보 X 변수들
+            available_x_cols = [c for c in num_cols if c != y_multi_col]
+            
+            with col_m_opt:
+                x_multi_cols = st.multiselect(
+                    "독립변수 (X) 선택 (최소 2개 이상)",
+                    available_x_cols,
+                    default=available_x_cols[:2],
+                    key="multi_x"
+                )
+            
+            use_std = st.checkbox("⚙️ 입력 데이터 표준화(StandardScaler) 적용하기", value=False)
+            test_size_m = st.slider("테스트 데이터 비율 (%) ", min_value=10, max_value=40, value=20, step=5, key="multi_slider") / 100.0
+
+            if len(x_multi_cols) < 2:
+                st.warning("⚠️ 다중선형회귀를 실행하려면 독립변수(X)를 최소 2개 이상 선택해야 합니다.")
+            else:
+                # 1. 데이터 준비
+                clean_m_df = df[x_multi_cols + [y_multi_col]].dropna()
+                X_m = clean_m_df[x_multi_cols]
+                y_m = clean_m_df[y_multi_col]
+                
+                # 2. Train / Test Split
+                X_m_train, X_m_test, y_m_train, y_m_test = train_test_split(X_m, y_m, test_size=test_size_m, random_state=42)
+                
+                # 3. Pipeline / Model Fit
+                if use_std:
+                    model_m = Pipeline([
+                        ('scaler', StandardScaler()),
+                        ('regressor', LinearRegression())
+                    ])
+                    model_m.fit(X_m_train, y_m_train)
+                    coefs = model_m.named_steps['regressor'].coef_
+                    intercept_m = model_m.named_steps['regressor'].intercept_
+                else:
+                    model_m = LinearRegression()
+                    model_m.fit(X_m_train, y_m_train)
+                    coefs = model_m.coef_
+                    intercept_m = model_m.intercept_
+                    
+                # 4. Predict
+                y_m_pred_test = model_m.predict(X_m_test)
+                metrics_m = calculate_metrics(y_m_test, y_m_pred_test, num_features=len(x_multi_cols))
+                
+                st.session_state['multi_model_results'] = {
+                    'x_cols': x_multi_cols,
+                    'y_col': y_multi_col,
+                    'coefs': coefs,
+                    'intercept': intercept_m,
+                    'metrics': metrics_m,
+                    'X_test': X_m_test,
+                    'y_test': y_m_test,
+                    'y_pred_test': y_m_pred_test,
+                    'use_std': use_std
+                }
+
+                st.markdown("---")
+                st.subheader("📊 1. 다중선형회귀 식 및 계수")
+                
+                # 회귀식 문자열 생성
+                eq_terms = [f"({c:.4f} × {col})" for c, col in zip(coefs, x_multi_cols)]
+                eq_str = f"예측 {y_multi_col} = {' + '.join(eq_terms)} + ({intercept_m:.4f})"
+                st.info(f"📐 **학습된 다중선형회귀식**:\n`{eq_str}`")
+
+                st.warning("⚠️ **회귀계수 해석 주의사항**: 다중선형회귀의 회귀계수는 **다른 입력 변수들이 일정하다고 가정했을 때** 해당 변수가 1만큼 변할 때의 예측값 변화를 의미합니다. 변수마다 단위(℃, %, m/s 등)가 다르면 계수의 크기만으로 어떤 변수가 더 중요한지 직접 비교하기 어렵습니다.")
+
+                if use_std:
+                    st.success("✨ **표준화(StandardScaler) 적용됨**: 모든 입력 변수의 평균을 0, 표준편차를 1로 변환했으므로, 표준화 후의 계수 크기를 통해 변수들의 상대적 영향력을 직접 비교할 수 있습니다!")
+
+                # 회귀계수 표 및 막대그래프
+                coef_df = pd.DataFrame({
+                    "독립변수(X)": x_multi_cols,
+                    "회귀계수(Coefficient)": coefs
+                })
+                
+                col_c1, col_c2 = st.columns([1, 1])
+                with col_c1:
+                    st.markdown("**변수별 회귀계수 표**")
+                    st.dataframe(coef_df.style.format({"회귀계수(Coefficient)": "{:.4f}"}), use_container_width=True)
+                    st.metric("절편 (Intercept)", f"{intercept_m:.4f}")
+                    
+                with col_c2:
+                    st.markdown("**회귀계수 크기 비교 막대그래프**")
+                    fig_coef = px.bar(
+                        coef_df, x="독립변수(X)", y="회귀계수(Coefficient)",
+                        color="회귀계수(Coefficient)",
+                        title="변수별 회귀계수 시각화",
+                        color_continuous_scale="Viridis"
+                    )
+                    st.plotly_chart(fig_coef, use_container_width=True)
+
+                st.markdown("---")
+                st.subheader("🔮 2. 다중선형회귀 예측 시뮬레이터")
+                st.write("각 변수의 값을 조절하여 종속변수 예측값이 어떻게 달라지는지 확인해보세요.")
+                
+                input_vals = {}
+                col_inputs = st.columns(min(len(x_multi_cols), 4))
+                
+                for idx, col_name in enumerate(x_multi_cols):
+                    c_target = col_inputs[idx % 4]
+                    mean_val = float(X_m[col_name].mean())
+                    min_v = float(X_m[col_name].min())
+                    max_v = float(X_m[col_name].max())
+                    input_vals[col_name] = c_target.number_input(
+                        f"`{col_name}` 입력",
+                        min_value=min_v - (max_v - min_v),
+                        max_value=max_v + (max_v - min_v),
+                        value=mean_val,
+                        key=f"multi_in_{col_name}"
+                    )
+
+                input_single_df = pd.DataFrame([input_vals])
+                pred_multi_y = model_m.predict(input_single_df)[0]
+                
+                st.metric(label=f"다중 모델의 예측 `{y_multi_col}` 값", value=f"{pred_multi_y:.2f}")
+
+    with st.expander("❓ [탐구 질문] 다중선형회귀"):
+        st.markdown("""
+        1. 독립변수를 1개에서 여러 개로 늘렸을 때 모델의 예측 능력은 어떻게 변했나요?
+        2. 변수들의 단위가 서로 다를 때 회귀계수의 크기만으로 중요도를 비교하면 왜 안 되나요?
+        3. 표준화(Standardization)를 적용하면 회귀계수의 값은 어떻게 바뀌나요?
+        """)
+
+# ------------------------------------------
+# Tab 6: 모델 평가 및 비교
+# ------------------------------------------
+with tab6:
+    st.header("⚖️ 모델 평가 및 성능 비교")
+    
+    simple_res = st.session_state.get('simple_model_results')
+    multi_res = st.session_state.get('multi_model_results')
+    
+    if simple_res is None or multi_res is None:
+        st.warning("⚠️ 단순선형회귀(4단계)와 다중선형회귀(5단계)를 모두 먼저 학습시켜주세요!")
+    else:
+        st.subheader("1️⃣ 모델 성능 비교표")
+        
+        s_m = simple_res['metrics']
+        m_m = multi_res['metrics']
+        
+        comp_df = pd.DataFrame({
+            "비교 항목": ["사용한 독립변수(X)", "R² (결정계수)", "조정된 R² (Adj-R²)", "MAE", "MSE", "RMSE"],
+            "단순선형회귀": [
+                f"{simple_res['x_col']}",
+                f"{s_m['R2']:.4f}",
+                f"{s_m['Adj_R2']:.4f}",
+                f"{s_m['MAE']:.4f}",
+                f"{s_m['MSE']:.4f}",
+                f"{s_m['RMSE']:.4f}"
+            ],
+            "다중선형회귀": [
+                f"{', '.join(multi_res['x_cols'])}",
+                f"{m_m['R2']:.4f}",
+                f"{m_m['Adj_R2']:.4f}",
+                f"{m_m['MAE']:.4f}",
+                f"{m_m['MSE']:.4f}",
+                f"{m_m['RMSE']:.4f}"
+            ]
+        })
+        
+        st.table(comp_df)
+
+        st.markdown("---")
+        st.subheader("📚 평가 지표 지식 상자")
+        
+        c_exp1, c_exp2 = st.columns(2)
+        with c_exp1:
+            st.info("""
+            * **MAE (Mean Absolute Error, 평균 절대 오차)**: 실제값과 예측값 차이의 절댓값 평균.
+            * **MSE (Mean Squared Error, 평균 제곱 오차)**: 오차를 제곱하여 평균한 값. **큰 오차에 더 큰 벌점**을 줍니다.
+            * **RMSE (Root Mean Squared Error, 근사 평균 제곱 오차)**: MSE에 제곱근을 씌워 **원래 y와 동일한 단위**로 맞춘 오차 지표입니다.
+            """)
+        with c_exp2:
+            st.success("""
+            * **$R^2$ (결정계수, Coefficient of Determination)**: 모델이 종속변수의 전체 변동성을 몇 %나 설명하는지 나타냄 (1.0에 가까울수록 성능 우수).
+            * **조정된 $R^2$ (Adjusted $R^2$)**: 쓸모없는 변수를 무작정 많이 추가할 때 $R^2$가 인위적으로 높아지는 현상을 **방지하기 위해 보정한 지표**.
+            """)
+
+        st.markdown("---")
+        st.subheader("2️⃣ 진단 그래프 분석 (다중선형회귀 기준)")
+        
+        col_g1, col_g2 = st.columns(2)
+        
+        y_true_m = multi_res['y_test']
+        y_pred_m = multi_res['y_pred_test']
+        residuals_m = y_true_m - y_pred_m
+        
+        with col_g1:
+            st.markdown("**① 실제값 vs 예측값 산점도**")
+            fig_act_pred = go.Figure()
+            fig_act_pred.add_trace(go.Scatter(
+                x=y_true_m, y=y_pred_m, mode='markers',
+                marker=dict(color='#2ca02c', size=8),
+                name='예측 데이터'
+            ))
+            # 1:1 대각 기준선 (이상적 예측)
+            min_val = min(y_true_m.min(), y_pred_m.min())
+            max_val = max(y_true_m.max(), y_pred_m.max())
+            fig_act_pred.add_trace(go.Scatter(
+                x=[min_val, max_val], y=[min_val, max_val],
+                mode='lines', line=dict(color='red', dash='dash'),
+                name='이상적 예측선 (y=x)'
+            ))
+            fig_act_pred.update_layout(
+                xaxis_title="실제값 (Actual)",
+                yaxis_title="예측값 (Predicted)",
+                title="실제값 vs 예측값"
+            )
+            st.plotly_chart(fig_act_pred, use_container_width=True)
+            
+        with col_g2:
+            st.markdown("**② 잔차 산점도 (Residual Plot)**")
+            fig_res_scat = go.Figure()
+            fig_res_scat.add_trace(go.Scatter(
+                x=y_pred_m, y=residuals_m, mode='markers',
+                marker=dict(color='#d62728', size=8),
+                name='잔차'
+            ))
+            fig_res_scat.add_hline(y=0, line_dash="dash", line_color="black")
+            fig_res_scat.update_layout(
+                xaxis_title="예측값 (Predicted)",
+                yaxis_title="잔차 (Actual - Predicted)",
+                title="예측값 vs 잔차"
+            )
+            st.plotly_chart(fig_res_scat, use_container_width=True)
+
+        col_g3, col_g4 = st.columns(2)
+        with col_g3:
+            st.markdown("**③ 잔차 분포 히스토그램**")
+            fig_res_hist = px.histogram(
+                x=residuals_m, nbins=15, title="잔차 분포",
+                color_discrete_sequence=['#9467bd']
+            )
+            fig_res_hist.update_layout(xaxis_title="잔차", yaxis_title="빈도수")
+            st.plotly_chart(fig_res_hist, use_container_width=True)
+
+        with col_g4:
+            st.markdown("💡 **진단 그래프 자동 해석 가이드**")
+            st.write("""
+            - **실제값 vs 예측값**: 데이터 점들이 **빨간 점선(y=x)**에 가까이 모여 있을수록 모델의 예측 정확도가 뛰어납니다.
+            - **잔차 산점도**: 잔차가 0을 중심으로 **위아래 무작위(Random)로 고르게 분포**해야 선형회귀 가정이 잘 만족된 것입니다.
+            - **잔차 히스토그램**: 잔차의 모양이 **0을 중심으로 종 모양(정규분포)**에 가까울수록 좋은 모델입니다.
+            - **곡선 패턴 발견 시**: 잔차 분포에 U자나 특정 곡선 패턴이 나타난다면 변수 간의 관계가 '비선형(Non-linear)'일 가능성이 높습니다.
+            """)
+
+        st.markdown("---")
+        st.subheader("📢 최종 모델 선택 고찰")
+        
+        r2_diff = m_m['R2'] - s_m['R2']
+        rmse_diff = s_m['RMSE'] - m_m['RMSE']
+        
+        st.success(f"""
+        **💡 분석 요약:**
+        * 단순 모델 대비 다중 모델의 $R^2$ 변화량: **{r2_diff:+.4f}**
+        * 단순 모델 대비 다중 모델의 RMSE(오차) 감소량: **{rmse_diff:+.4f}**
+        
+        **📌 결론 도출 팁:**
+        단순히 변수가 많다고 무조건 '좋은 모델'은 아닙니다. 다중선형회귀의 $R^2$가 높아졌더라도 **조정된 $R^2$나 RMSE 오차가 실질적으로 개선되었는지** 확인해야 합니다. 모델의 오차 성능과 **단순성(설명 용이성)** 사이의 균형을 맞추는 것이 중요합니다.
+        """)
+
+    with st.expander("❓ [탐구 질문] 모델 평가 및 비교"):
+        st.markdown("""
+        1. 독립변수를 무조건 많이 넣으면 $R^2$ 지표는 어떻게 변하나요? 이것이 항상 좋은 모델을 의미할까요?
+        2. $R^2$가 높아졌는데 RMSE 오차가 오히려 커지는 상황이 발생할 수도 있을까요? 이유를 생각해봅시다.
+        3. 이상치(Outlier)를 제거한 후 모델을 다시 학습시키면 회귀식과 평가 지표는 어떻게 변할까요?
+        4. 우리가 완성한 이 미세먼지 예측 선형회귀 모델을 실제 기상청 예보에 바로 적용해도 될까요? 한계점은 무엇일까요?
+        """)
